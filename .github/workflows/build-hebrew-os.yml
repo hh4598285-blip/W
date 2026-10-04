@@ -1,0 +1,53 @@
+name: Build Hebrew OS Live ISO
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-iso:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            debootstrap squashfs-tools xorriso grub-pc-bin grub-efi-amd64-bin \
+            mtools dosfstools isolinux syslinux-efi
+
+      - name: Build Hebrew Live filesystem
+        run: |
+          chmod +x scripts/build-complete-hebrew-os.sh
+          sudo ./scripts/build-complete-hebrew-os.sh
+
+      - name: Locate built ISO
+        id: find_iso
+        run: |
+          ISO_PATH=$(find /tmp -maxdepth 2 -iname "*.iso" | head -n1)
+          if [ -z "$ISO_PATH" ]; then
+            echo "No ISO file was produced - build step did not complete successfully."
+            exit 1
+          fi
+          echo "iso_path=$ISO_PATH" >> "$GITHUB_OUTPUT"
+          ls -lh "$ISO_PATH"
+
+      - name: Upload ISO as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hebrew-os-live-bootable
+          path: ${{ steps.find_iso.outputs.iso_path }}
+          retention-days: 14
