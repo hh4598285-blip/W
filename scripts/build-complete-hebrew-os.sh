@@ -1,94 +1,101 @@
 #!/bin/bash
 set -Eeuo pipefail
 
-PURPLE='\033[0;35m'
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m'
+PURPLE='\033[0;35m'; GREEN='\033[0;32m'; BLUE='\033[0;34m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
+WORK=/tmp/hebrew-os-live-iso
+ROOT="$WORK/root"
+ISO_DIR="$WORK/iso"
+ISO_OUTPUT=/tmp/hebrew-os-live-bootable.iso
 
-log_error() { echo -e "${RED}[ERROR]${NC} Build failed at line ${BASH_LINENO[0]}."; }
-trap log_error ERR
+error_handler() { echo -e "${RED}[ERROR]${NC} Build failed at line ${BASH_LINENO[0]} (exit ${?})."; }
+trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo -e "${RED}[ERROR]${NC} Build failed (exit $rc)."; fi' EXIT
+
+if [ "$EUID" -ne 0 ]; then exec sudo "$0" "$@"; fi
+export DEBIAN_FRONTEND=noninteractive
 
 echo -e "${PURPLE}Hebrew OS - Live Bootable ISO Builder${NC}"
 
-if [ "$EUID" -ne 0 ]; then
-    echo -e "${YELLOW}[*] Needs sudo - re-running...${NC}"
-    exec sudo "$0" "$@"
-fi
+REQUIRED_TOOLS=(debootstrap mksquashfs xorriso grub-mkrescue)
+apt-get update
+apt-get install -y debootstrap squashfs-tools xorriso grub-pc-bin grub-efi-amd64-bin mtools dosfstools isolinux syslinux-efi
 
-export DEBIAN_FRONTEND=noninteractive
-
-REQUIRED_TOOLS=("debootstrap" "mksquashfs" "xorriso" "grub-mkrescue")
-for tool in "${REQUIRED_TOOLS[@]}"; do
-    if ! command -v "$tool" >/dev/null 2>&1; then
-        echo -e "${YELLOW}[*] Installing $tool...${NC}"
-        apt-get update
-        apt-get install -y "$tool"
-    fi
-done
-
-WORK=/tmp/hebrew-os-live-iso
 rm -rf "$WORK"
-mkdir -p "$WORK/root" "$WORK/iso/live" "$WORK/iso/boot/grub"
+mkdir -p "$ROOT" "$ISO_DIR/live" "$ISO_DIR/boot/grub"
 
-cleanup_mounts() {
-    set +e
-    for target in "$WORK/root/run" "$WORK/root/sys" "$WORK/root/proc" "$WORK/root/dev"; do
-        if mountpoint -q "$target"; then
-            umount -R "$target" 2>/dev/null || umount "$target" 2>/dev/null || true
-        fi
-    done
+echo -e "${BLUE}[2] Creating minimal Ubuntu base...${NC}"
+# IMPORTANT: debootstrap must remain minimal. Installing XFCE/Firefox/LibreOffice/etc.
+# inside debootstrap causes package configuration failures in the bootstrap chroot.
+debootstrap --variant=minbase --components=main,universe,restricted,multiverse \
+  --include=ca-certificates,apt,locales,sudo \
+  jammy "$ROOT" http://archive.ubuntu.com/ubuntu
+
+echo -e "${GREEN}[OK]${NC} Minimal Ubuntu base created"
+
+echo -e "${BLUE}[3] Mounting virtual filesystems...${NC}"
+mkdir -p "$ROOT/dev" "$ROOT/proc" "$ROOT/sys" "$ROOT/run"
+mount --rbind /dev "$ROOT/dev"
+mount --make-rslave "$ROOT/dev"
+mount -t proc proc "$ROOT/proc"
+mount --rbind /sys "$ROOT/sys"
+mount --make-rslave "$ROOT/sys"
+mount --bind /run "$ROOT/run"
+
+cleanup() {
+  set +e
+  for p in "$ROOT/run" "$ROOT/sys" "$ROOT/proc" "$ROOT/dev"; do
+    mountpoint -q "$p" && umount -R "$p" 2>/dev/null || true
+  done
 }
-trap cleanup_mounts EXIT
+trap cleanup EXIT
 
-echo -e "${BLUE}[2] Building Live System (this may take 20-30 minutes)...${NC}"
+# Give the chroot working DNS/network access.
+rm -f "$ROOT/etc/resolv.conf"
+cp -L /etc/resolv.conf "$ROOT/etc/resolv.conf"
 
-# Ubuntu Focal uses universe for several desktop utilities.
-# firefox-esr is a Debian package; Ubuntu uses firefox.
-PACKAGES="linux-image-generic,grub-pc-bin,grub-efi-amd64-bin"
-PACKAGES="$PACKAGES,xfce4,xfce4-terminal,mousepad,thunar,xfce4-panel,xfce4-session"
-PACKAGES="$PACKAGES,firefox,vlc,gimp"
-PACKAGES="$PACKAGES,libreoffice-writer,libreoffice-calc,libreoffice-impress"
-PACKAGES="$PACKAGES,python3,python3-pip,git,gcc,g++,make,build-essential"
-PACKAGES="$PACKAGES,curl,wget,openssh-client"
-PACKAGES="$PACKAGES,htop,neofetch,vim,nano,less,file,unzip,zip,tar,gzip"
-PACKAGES="$PACKAGES,fonts-liberation,fonts-dejavu,fonts-noto-cjk"
-PACKAGES="$PACKAGES,network-manager,pulseaudio,alsa-utils,xorg"
-PACKAGES="$PACKAGES,gpicview,imagemagick"
-PACKAGES="$PACKAGES,xclip,xsel,wmctrl"
-PACKAGES="$PACKAGES,acpi,lsb-release"
+# Prevent daemons from trying to start while packages are installed in the chroot.
+cat > "$ROOT/usr/sbin/policy-rc.d" <<'POLICY'
+#!/bin/sh
+exit 101
+POLICY
+chmod +x "$ROOT/usr/sbin/policy-rc.d"
 
-# Enable all Ubuntu components needed by the desktop package set.
-debootstrap \
-    --components=main,universe,restricted,multiverse \
-    --include="$PACKAGES" \
-    focal "$WORK/root" http://archive.ubuntu.com/ubuntu
+cat > "$ROOT/etc/apt/sources.list" <<'APT_SOURCES'
+deb http://archive.ubuntu.com/ubuntu jammy main restricted universe multiverse
+deb http://archive.ubuntu.com/ubuntu jammy-updates main restricted universe multiverse
+deb http://security.ubuntu.com/ubuntu jammy-security main restricted universe multiverse
+APT_SOURCES
 
-echo -e "${GREEN}[OK]${NC} System built"
-echo -e "${BLUE}[3] Adding Hebrew support...${NC}"
-
-# Always create mount points before mounting them.
-mkdir -p "$WORK/root/dev" "$WORK/root/proc" "$WORK/root/sys" "$WORK/root/run"
-
-mount --rbind /dev "$WORK/root/dev"
-mount --make-rslave "$WORK/root/dev"
-mount -t proc /proc "$WORK/root/proc"
-mount --rbind /sys "$WORK/root/sys"
-mount --make-rslave "$WORK/root/sys"
-mount --bind /run "$WORK/root/run"
-
-chroot "$WORK/root" /bin/bash << 'HEBREW_SETUP'
+cat > "$ROOT/tmp/install-live-system.sh" <<'CHROOT_SCRIPT'
+#!/bin/bash
 set -Eeuo pipefail
 export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y --no-install-recommends \
+  linux-image-generic casper initramfs-tools \
+  xfce4 xfce4-terminal xfce4-panel xfce4-session thunar mousepad \
+  lightdm xserver-xorg xserver-xorg-video-all \
+  network-manager pulseaudio alsa-utils \
+  fonts-dejavu fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji \
+  language-pack-he language-pack-gnome-he locales \
+  firefox vlc gimp libreoffice-writer libreoffice-calc libreoffice-impress \
+  python3 python3-pip git gcc g++ make build-essential \
+  curl wget openssh-client htop vim nano less file unzip zip tar gzip \
+  imagemagick xclip xsel wmctrl acpi lsb-release
 
-ln -sf /usr/share/zoneinfo/Asia/Jerusalem /etc/localtime
+# Hebrew locale and keyboard.
 grep -qxF 'he_IL.UTF-8 UTF-8' /etc/locale.gen || echo 'he_IL.UTF-8 UTF-8' >> /etc/locale.gen
 locale-gen he_IL.UTF-8
-update-locale LANG=he_IL.UTF-8
+update-locale LANG=he_IL.UTF-8 LANGUAGE=he_IL:he LC_ALL=he_IL.UTF-8
+ln -sf /usr/share/zoneinfo/Asia/Jerusalem /etc/localtime
 
-cat > /etc/default/keyboard << 'KEYBOARD_EOF'
+auto_user() {
+  if ! id live >/dev/null 2>&1; then useradd -m -s /bin/bash -G sudo,adm,input,kvm,audio,video live; fi
+  echo 'live:live' | chpasswd
+  usermod -aG sudo,audio,video,plugdev,netdev live || true
+}
+auto_user
+
+cat > /etc/default/keyboard <<'KEYBOARD_EOF'
 XKBMODEL="pc105"
 XKBLAYOUT="us,il"
 XKBVARIANT=","
@@ -97,87 +104,90 @@ BACKSPACE="guess"
 KEYBOARD_EOF
 
 echo 'hebrew-os-live' > /etc/hostname
-cat > /etc/hosts << 'HOSTS_EOF'
-127.0.0.1       localhost
-127.0.1.1       hebrew-os-live
-::1             localhost ip6-localhost ip6-loopback
+cat > /etc/hosts <<'HOSTS_EOF'
+127.0.0.1 localhost
+127.0.1.1 hebrew-os-live
+::1 localhost ip6-localhost ip6-loopback
 HOSTS_EOF
 
-if ! id live >/dev/null 2>&1; then
-    useradd -m -s /bin/bash -G sudo,adm,input,kvm,disk live
-fi
-echo 'live:live' | chpasswd
-usermod -aG sudo live
+# LightDM automatic login into XFCE.
+mkdir -p /etc/lightdm/lightdm.conf.d
+cat > /etc/lightdm/lightdm.conf.d/50-hebrew-os.conf <<'LIGHTDM'
+[Seat:*]
+autologin-user=live
+autologin-user-timeout=0
+user-session=xfce
+session-setup-script=/etc/lightdm/session-setup.sh
+LIGHTDM
+cat > /etc/lightdm/session-setup.sh <<'SESSION'
+#!/bin/sh
+export LANG=he_IL.UTF-8
+export LANGUAGE=he_IL:he
+SESSION
+chmod +x /etc/lightdm/session-setup.sh
 
-mkdir -p /home/live/{Desktop,Documents,Downloads,Pictures}
-chown -R live:live /home/live
-
-apt-get clean
-apt-get autoclean
-update-initramfs -u -k all
-
-echo "[OK] Hebrew configured"
-HEBREW_SETUP
-
-cleanup_mounts
-trap - EXIT
-
-echo -e "${GREEN}[OK]${NC} Hebrew setup done"
-echo -e "${BLUE}[4] Adding welcome content...${NC}"
-
-mkdir -p "$WORK/root/home/live/Desktop"
-cat > "$WORK/root/home/live/Desktop/Welcome.txt" << 'WELCOME_EOF'
+mkdir -p /home/live/Desktop /home/live/Documents /home/live/Downloads /home/live/Pictures
+cat > /home/live/Desktop/Welcome.txt <<'WELCOME'
 Hebrew OS - Live Edition
-No installation needed - this boots directly from USB!
+
+ברוכים הבאים ל-Hebrew OS!
 
 LOGIN: live / live
-HEBREW KEYBOARD: Alt + Shift to toggle
-WELCOME_EOF
-chown live:live "$WORK/root/home/live/Desktop/Welcome.txt"
+HEBREW KEYBOARD: Alt + Shift
 
-echo -e "${BLUE}[5] Compressing filesystem (this may take 15 minutes)...${NC}"
-mksquashfs "$WORK/root" "$WORK/iso/live/filesystem.squashfs" -comp xz -e boot
+המערכת מופעלת ישירות מ-USB ללא התקנה.
+WELCOME
+chown -R live:live /home/live
+
+# Remove installer-only caches and rebuild initramfs.
+apt-get clean
+rm -rf /var/lib/apt/lists/*
+update-initramfs -c -k all
+CHROOT_SCRIPT
+chmod +x "$ROOT/tmp/install-live-system.sh"
+
+chroot "$ROOT" /tmp/install-live-system.sh
+rm -f "$ROOT/tmp/install-live-system.sh" "$ROOT/usr/sbin/policy-rc.d"
+
+echo -e "${GREEN}[OK]${NC} Hebrew Live system configured"
+
+echo -e "${BLUE}[4] Compressing filesystem...${NC}"
+rm -f "$ISO_DIR/live/filesystem.squashfs"
+mksquashfs "$ROOT" "$ISO_DIR/live/filesystem.squashfs" -comp xz -e boot
 
 echo -e "${GREEN}[OK]${NC} Filesystem compressed"
-echo -e "${BLUE}[6] Copying kernel...${NC}"
 
-KERNEL=$(find "$WORK/root/boot" -maxdepth 1 -type f -name 'vmlinuz-*' | sort -V | tail -1 || true)
-INITRD=$(find "$WORK/root/boot" -maxdepth 1 -type f -name 'initrd.img-*' | sort -V | tail -1 || true)
-if [ -z "$KERNEL" ] || [ -z "$INITRD" ]; then
-    echo -e "${RED}[ERROR]${NC} Kernel or initrd was not created."
-    exit 1
-fi
-cp "$KERNEL" "$WORK/iso/live/vmlinuz"
-cp "$INITRD" "$WORK/iso/live/initrd"
+echo -e "${BLUE}[5] Copying kernel and initrd...${NC}"
+KERNEL=$(find "$ROOT/boot" -maxdepth 1 -type f -name 'vmlinuz-*' | sort -V | tail -1)
+INITRD=$(find "$ROOT/boot" -maxdepth 1 -type f -name 'initrd.img-*' | sort -V | tail -1)
+[ -n "$KERNEL" ] && [ -f "$KERNEL" ] || { echo "Kernel missing"; exit 1; }
+[ -n "$INITRD" ] && [ -f "$INITRD" ] || { echo "Initrd missing"; exit 1; }
+cp "$KERNEL" "$ISO_DIR/live/vmlinuz"
+cp "$INITRD" "$ISO_DIR/live/initrd"
 
-echo -e "${BLUE}[7] Configuring GRUB...${NC}"
-mkdir -p "$WORK/iso/boot/grub"
-cat > "$WORK/iso/boot/grub/grub.cfg" << 'GRUB_CFG'
+echo -e "${BLUE}[6] Creating GRUB boot menu...${NC}"
+cat > "$ISO_DIR/boot/grub/grub.cfg" <<'GRUB_CFG'
 set default=0
-set timeout=10
+set timeout=8
 
 menuentry "Hebrew OS - Live" {
-    search --no-floppy --label HEBREW-OS --set root
-    linux /live/vmlinuz boot=live live-media-path=/live toram quiet splash
+    linux /live/vmlinuz boot=casper quiet splash ---
     initrd /live/initrd
 }
 
 menuentry "Hebrew OS - Live (Safe Mode)" {
-    search --no-floppy --label HEBREW-OS --set root
-    linux /live/vmlinuz boot=live live-media-path=/live nomodeset quiet splash
+    linux /live/vmlinuz boot=casper nomodeset ---
     initrd /live/initrd
 }
 GRUB_CFG
 
-echo -e "${BLUE}[8] Building ISO...${NC}"
-ISO_OUTPUT="/tmp/hebrew-os-live-bootable.iso"
+echo -e "${BLUE}[7] Building bootable ISO...${NC}"
 rm -f "$ISO_OUTPUT"
-grub-mkrescue --output="$ISO_OUTPUT" --volid=HEBREW-OS "$WORK/iso/"
+grub-mkrescue --output="$ISO_OUTPUT" --volid=HEBREW-OS "$ISO_DIR"
 
 if [ -s "$ISO_OUTPUT" ]; then
-    ISO_SIZE=$(du -h "$ISO_OUTPUT" | cut -f1)
-    echo -e "${GREEN}[OK] ISO built successfully: $ISO_OUTPUT ($ISO_SIZE)${NC}"
+  echo -e "${GREEN}[OK] ISO built successfully: $ISO_OUTPUT ($(du -h "$ISO_OUTPUT" | cut -f1))${NC}"
 else
-    echo -e "${RED}[ERROR] ISO build failed${NC}"
-    exit 1
+  echo -e "${RED}[ERROR] ISO build failed${NC}"
+  exit 1
 fi
