@@ -142,9 +142,6 @@ rm -f "$ROOT/tmp/install-live-system.sh" "$ROOT/usr/sbin/policy-rc.d"
 echo -e "${GREEN}[OK]${NC} Hebrew Live system configured"
 
 echo -e "${BLUE}[4] Unmounting virtual filesystems before filesystem packaging...${NC}"
-# /proc, /sys, /dev and /run are host/chroot virtual filesystems. They must NEVER
-# be traversed by mksquashfs; doing so produces /proc/irq/* read failures and can
-# cause the Actions job to be cancelled.
 cleanup_mounts
 
 for p in "$ROOT/proc" "$ROOT/sys" "$ROOT/dev" "$ROOT/run"; do
@@ -154,11 +151,9 @@ for p in "$ROOT/proc" "$ROOT/sys" "$ROOT/dev" "$ROOT/run"; do
   fi
 done
 
-# Replace the mount points with empty directories so the squashfs tree is safe.
 rm -rf "$ROOT/proc" "$ROOT/sys" "$ROOT/dev" "$ROOT/run"
 mkdir -p "$ROOT/proc" "$ROOT/sys" "$ROOT/dev" "$ROOT/run"
 
-# Do not include transient runtime trees in the ISO filesystem.
 rm -f "$ISO_DIR/live/filesystem.squashfs"
 mksquashfs "$ROOT" "$ISO_DIR/live/filesystem.squashfs" -comp xz \
   -e proc sys dev run tmp
@@ -191,7 +186,9 @@ GRUB_CFG
 
 echo -e "${BLUE}[7] Building bootable ISO...${NC}"
 rm -f "$ISO_OUTPUT"
-grub-mkrescue --output="$ISO_OUTPUT" --volid=HEBREW-OS "$ISO_DIR"
+# grub-mkrescue expects --label; --volid is forwarded to xorriso as an
+# unsupported long mkisofs option on this runner.
+grub-mkrescue --output="$ISO_OUTPUT" --label=HEBREW-OS "$ISO_DIR"
 
 if [ -s "$ISO_OUTPUT" ]; then
   echo -e "${GREEN}[OK] ISO built successfully: $ISO_OUTPUT ($(du -h "$ISO_OUTPUT" | cut -f1))${NC}"
