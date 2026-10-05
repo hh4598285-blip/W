@@ -7,7 +7,6 @@ ROOT="$WORK/root"
 ISO_DIR="$WORK/iso"
 ISO_OUTPUT=/tmp/hebrew-os-live-bootable.iso
 
-error_handler() { echo -e "${RED}[ERROR]${NC} Build failed at line ${BASH_LINENO[0]} (exit ${?})."; }
 trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo -e "${RED}[ERROR]${NC} Build failed (exit $rc)."; fi' EXIT
 
 if [ "$EUID" -ne 0 ]; then exec sudo "$0" "$@"; fi
@@ -15,7 +14,6 @@ export DEBIAN_FRONTEND=noninteractive
 
 echo -e "${PURPLE}Hebrew OS - Live Bootable ISO Builder${NC}"
 
-REQUIRED_TOOLS=(debootstrap mksquashfs xorriso grub-mkrescue)
 apt-get update
 apt-get install -y debootstrap squashfs-tools xorriso grub-pc-bin grub-efi-amd64-bin mtools dosfstools isolinux syslinux-efi
 
@@ -23,8 +21,6 @@ rm -rf "$WORK"
 mkdir -p "$ROOT" "$ISO_DIR/live" "$ISO_DIR/boot/grub"
 
 echo -e "${BLUE}[2] Creating minimal Ubuntu base...${NC}"
-# IMPORTANT: debootstrap must remain minimal. Installing XFCE/Firefox/LibreOffice/etc.
-# inside debootstrap causes package configuration failures in the bootstrap chroot.
 debootstrap --variant=minbase --components=main,universe,restricted,multiverse \
   --include=ca-certificates,apt,locales,sudo \
   jammy "$ROOT" http://archive.ubuntu.com/ubuntu
@@ -40,19 +36,26 @@ mount --rbind /sys "$ROOT/sys"
 mount --make-rslave "$ROOT/sys"
 mount --bind /run "$ROOT/run"
 
-cleanup() {
+cleanup_mounts() {
   set +e
   for p in "$ROOT/run" "$ROOT/sys" "$ROOT/proc" "$ROOT/dev"; do
-    mountpoint -q "$p" && umount -R "$p" 2>/dev/null || true
+    if mountpoint -q "$p"; then
+      umount -R -lf "$p" 2>/dev/null || true
+    fi
   done
 }
-trap cleanup EXIT
 
-# Give the chroot working DNS/network access.
+cleanup_all() {
+  cleanup_mounts
+  rm -f "$ROOT/usr/sbin/policy-rc.d" 2>/dev/null || true
+  rm -f "$ROOT/etc/resolv.conf" 2>/dev/null || true
+}
+
+trap cleanup_all EXIT
+
 rm -f "$ROOT/etc/resolv.conf"
 cp -L /etc/resolv.conf "$ROOT/etc/resolv.conf"
 
-# Prevent daemons from trying to start while packages are installed in the chroot.
 cat > "$ROOT/usr/sbin/policy-rc.d" <<'POLICY'
 #!/bin/sh
 exit 101
@@ -82,18 +85,14 @@ apt-get install -y --no-install-recommends \
   curl wget openssh-client htop vim nano less file unzip zip tar gzip \
   imagemagick xclip xsel wmctrl acpi lsb-release
 
-# Hebrew locale and keyboard.
 grep -qxF 'he_IL.UTF-8 UTF-8' /etc/locale.gen || echo 'he_IL.UTF-8 UTF-8' >> /etc/locale.gen
 locale-gen he_IL.UTF-8
 update-locale LANG=he_IL.UTF-8 LANGUAGE=he_IL:he LC_ALL=he_IL.UTF-8
 ln -sf /usr/share/zoneinfo/Asia/Jerusalem /etc/localtime
 
-auto_user() {
-  if ! id live >/dev/null 2>&1; then useradd -m -s /bin/bash -G sudo,adm,input,kvm,audio,video live; fi
-  echo 'live:live' | chpasswd
-  usermod -aG sudo,audio,video,plugdev,netdev live || true
-}
-auto_user
+if ! id live >/dev/null 2>&1; then useradd -m -s /bin/bash -G sudo,adm,input,kvm,audio,video live; fi
+echo 'live:live' | chpasswd
+usermod -aG sudo,audio,video,plugdev,netdev live || true
 
 cat > /etc/default/keyboard <<'KEYBOARD_EOF'
 XKBMODEL="pc105"
@@ -110,21 +109,13 @@ cat > /etc/hosts <<'HOSTS_EOF'
 ::1 localhost ip6-localhost ip6-loopback
 HOSTS_EOF
 
-# LightDM automatic login into XFCE.
 mkdir -p /etc/lightdm/lightdm.conf.d
 cat > /etc/lightdm/lightdm.conf.d/50-hebrew-os.conf <<'LIGHTDM'
 [Seat:*]
 autologin-user=live
 autologin-user-timeout=0
 user-session=xfce
-session-setup-script=/etc/lightdm/session-setup.sh
 LIGHTDM
-cat > /etc/lightdm/session-setup.sh <<'SESSION'
-#!/bin/sh
-export LANG=he_IL.UTF-8
-export LANGUAGE=he_IL:he
-SESSION
-chmod +x /etc/lightdm/session-setup.sh
 
 mkdir -p /home/live/Desktop /home/live/Documents /home/live/Downloads /home/live/Pictures
 cat > /home/live/Desktop/Welcome.txt <<'WELCOME'
@@ -139,7 +130,6 @@ HEBREW KEYBOARD: Alt + Shift
 WELCOME
 chown -R live:live /home/live
 
-# Remove installer-only caches and rebuild initramfs.
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 update-initramfs -c -k all
@@ -151,9 +141,27 @@ rm -f "$ROOT/tmp/install-live-system.sh" "$ROOT/usr/sbin/policy-rc.d"
 
 echo -e "${GREEN}[OK]${NC} Hebrew Live system configured"
 
-echo -e "${BLUE}[4] Compressing filesystem...${NC}"
+echo -e "${BLUE}[4] Unmounting virtual filesystems before filesystem packaging...${NC}"
+# /proc, /sys, /dev and /run are host/chroot virtual filesystems. They must NEVER
+# be traversed by mksquashfs; doing so produces /proc/irq/* read failures and can
+# cause the Actions job to be cancelled.
+cleanup_mounts
+
+for p in "$ROOT/proc" "$ROOT/sys" "$ROOT/dev" "$ROOT/run"; do
+  if mountpoint -q "$p"; then
+    echo -e "${RED}[ERROR]${NC} Virtual filesystem still mounted: $p"
+    exit 1
+  fi
+done
+
+# Replace the mount points with empty directories so the squashfs tree is safe.
+rm -rf "$ROOT/proc" "$ROOT/sys" "$ROOT/dev" "$ROOT/run"
+mkdir -p "$ROOT/proc" "$ROOT/sys" "$ROOT/dev" "$ROOT/run"
+
+# Do not include transient runtime trees in the ISO filesystem.
 rm -f "$ISO_DIR/live/filesystem.squashfs"
-mksquashfs "$ROOT" "$ISO_DIR/live/filesystem.squashfs" -comp xz -e boot
+mksquashfs "$ROOT" "$ISO_DIR/live/filesystem.squashfs" -comp xz \
+  -e proc sys dev run tmp
 
 echo -e "${GREEN}[OK]${NC} Filesystem compressed"
 
