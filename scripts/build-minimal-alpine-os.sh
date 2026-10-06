@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-echo "=== Minimal Alpine GUI OS Builder (with internet support) ==="
+echo "=== Minimal Alpine GUI OS Builder (no chromium, fast compression) ==="
 
 WORK=/tmp/alpine-build
 ROOT="$WORK/root"
@@ -26,7 +26,6 @@ apk add --no-cache --root "$ROOT" --initdb -X http://dl-cdn.alpinelinux.org/alpi
     mpv feh zathura zathura-pdf-mupdf \
     eudev udev-init-scripts mesa-dri-gallium \
     dhcpcd wpa_supplicant iw \
-    chromium \
     font-noto font-noto-cjk ttf-dejavu \
     mkinitfs
 
@@ -85,8 +84,9 @@ INTERNET:
   - WiFi: connect-wifi "YourWifiName" "YourPassword"
 
 SOFTWARE (needs internet): apk add <package-name>
+  Example web browser: apk add chromium   (or: apk add netsurf for something lighter)
 
-APPS: chromium | mpv <file> | feh <file> | zathura <file>
+APPS: mpv <file> | feh <file> | zathura <file>
 EOF
 
 echo "[5] Enabling networking + udev at boot..."
@@ -103,9 +103,9 @@ echo "[6] Building initramfs..."
 KERNEL_VER=$(chroot "$ROOT" /bin/sh -c "ls /lib/modules" | head -n1)
 chroot "$ROOT" /bin/sh -c "mkinitfs -o /boot/initramfs-live $KERNEL_VER" || echo "[WARN] mkinitfs step may need adjustment"
 
-echo "[7] Packing squashfs..."
+echo "[7] Packing squashfs (zstd - fast compression)..."
 
-mksquashfs "$ROOT" "$ISO/live/filesystem.squashfs" -comp xz -e boot
+mksquashfs "$ROOT" "$ISO/live/filesystem.squashfs" -comp zstd -Xcompression-level 6 -e boot
 
 cp "$ROOT"/boot/vmlinuz-lts "$ISO/live/vmlinuz" 2>/dev/null || cp "$ROOT"/boot/vmlinuz-* "$ISO/live/vmlinuz"
 cp "$ROOT"/boot/initramfs-live "$ISO/live/initrd" 2>/dev/null || cp "$ROOT"/boot/initramfs-* "$ISO/live/initrd"
