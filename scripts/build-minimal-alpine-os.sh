@@ -1,5 +1,4 @@
 #!/bin/sh
-# Must run INSIDE an alpine:3.20 container (apk needs an Alpine host to build an Alpine root)
 set -e
 
 echo "=== Minimal Alpine GUI OS Builder (with internet support) ==="
@@ -60,19 +59,15 @@ echo "[4] Network setup (ethernet auto + WiFi helper script)..."
 mkdir -p "$ROOT/usr/local/bin"
 cat > "$ROOT/usr/local/bin/connect-wifi" << 'EOF'
 #!/bin/sh
-# Usage: connect-wifi "NetworkName" "password"
 if [ -z "$1" ] || [ -z "$2" ]; then
     echo "Usage: connect-wifi <WiFi-name> <password>"
-    echo "Example: connect-wifi \"MyHomeWifi\" \"mypassword123\""
     exit 1
 fi
-
 IFACE=$(ls /sys/class/net | grep -E '^(wlan|wlp)' | head -n1)
 if [ -z "$IFACE" ]; then
     echo "No WiFi adapter detected."
     exit 1
 fi
-
 wpa_passphrase "$1" "$2" > /etc/wpa_supplicant.conf
 pkill wpa_supplicant 2>/dev/null
 wpa_supplicant -B -i "$IFACE" -c /etc/wpa_supplicant.conf
@@ -86,21 +81,12 @@ cat > "$ROOT/root/Desktop/README.txt" << 'EOF'
 Minimal Alpine GUI Live OS
 
 INTERNET:
-  - Ethernet (cable): works automatically, no setup needed.
-  - WiFi: open a terminal and run:
-      connect-wifi "YourWifiName" "YourPassword"
-    Then check it worked with: ping -c 3 google.com
+  - Ethernet (cable): works automatically.
+  - WiFi: connect-wifi "YourWifiName" "YourPassword"
 
-SOFTWARE (needs internet):
-  apk update
-  apk add <package-name>
+SOFTWARE (needs internet): apk add <package-name>
 
-APPS:
-  Web browser:   chromium
-  Video/audio:   mpv <file>
-  Images:        feh <file>
-  PDF:           zathura <file>
-  Terminal:      right-click desktop > xterm
+APPS: chromium | mpv <file> | feh <file> | zathura <file>
 EOF
 
 echo "[5] Enabling networking + udev at boot..."
