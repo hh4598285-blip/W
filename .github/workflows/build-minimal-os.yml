@@ -1,0 +1,31 @@
+name: Build Minimal Alpine GUI OS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-iso:
+    runs-on: ubuntu-22.04
+    container:
+      image: alpine:3.20
+      options: --privileged
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install git (needed for checkout inside alpine container)
+        run: apk add --no-cache git
+
+      - name: Build minimal Alpine GUI OS
+        run: |
+          chmod +x scripts/build-minimal-alpine-os.sh
+          sh scripts/build-minimal-alpine-os.sh
+
+      - name: Upload ISO artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: minimal-alpine-gui-os
+          path: /tmp/minimal-alpine-os.iso
+          retention-days: 14
