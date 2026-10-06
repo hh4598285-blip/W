@@ -1,31 +1,48 @@
-name: Build Minimal Alpine GUI OS
+name: Build Minimal Alpine ISO
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/build-minimal-os.yml"
+      - "scripts/build-minimal-alpine-os.sh"
+
+permissions:
+  contents: read
 
 jobs:
   build-iso:
     runs-on: ubuntu-22.04
-    container:
-      image: alpine:3.20
-      options: --privileged
-    timeout-minutes: 180
+    timeout-minutes: 20
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install git (needed for checkout inside alpine container)
-        run: apk add --no-cache git
+      - name: Install ISO tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xorriso curl
 
-      - name: Build minimal Alpine GUI OS
+      - name: Build and validate ISO
+        env:
+          ALPINE_VERSION: "3.20.3"
+          ALPINE_ARCH: "x86_64"
         run: |
           chmod +x scripts/build-minimal-alpine-os.sh
-          sh scripts/build-minimal-alpine-os.sh
+          scripts/build-minimal-alpine-os.sh
 
-      - name: Upload ISO artifact
+      - name: Final ISO checks
+        run: |
+          test -s /tmp/minimal-alpine-gui-os.iso
+          file /tmp/minimal-alpine-gui-os.iso
+          xorriso -indev /tmp/minimal-alpine-gui-os.iso -toc >/dev/null
+          xorriso -indev /tmp/minimal-alpine-gui-os.iso -report_el_torito plain
+
+      - name: Upload bootable ISO
         uses: actions/upload-artifact@v4
         with:
           name: minimal-alpine-gui-os
-          path: /tmp/minimal-alpine-os.iso
+          path: /tmp/minimal-alpine-gui-os.iso
+          if-no-files-found: error
           retention-days: 14
