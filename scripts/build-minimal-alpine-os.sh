@@ -20,7 +20,7 @@ echo "[1] Installing base system + GUI + apps + networking into target root..."
 
 apk add --no-cache --root "$ROOT" --initdb -X http://dl-cdn.alpinelinux.org/alpine/v3.20/main -X http://dl-cdn.alpinelinux.org/alpine/v3.20/community -U --allow-untrusted \
     alpine-base \
-    linux-lts linux-firmware-none linux-firmware-brcm linux-firmware-iwlwifi linux-firmware-rtl_nic \
+    linux-lts linux-firmware-none linux-firmware-brcm linux-firmware-intel linux-firmware-rtl_nic linux-firmware-rtw88 \
     xorg-server xf86-video-fbdev xf86-video-vesa xf86-input-libinput \
     openbox xterm \
     mpv feh zathura zathura-pdf-mupdf \
