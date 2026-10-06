@@ -9,7 +9,7 @@ jobs:
     container:
       image: alpine:3.20
       options: --privileged
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     steps:
       - name: Checkout repository
